@@ -35,6 +35,10 @@
 #elif IS_ESP8266()
 #include <Ticker.h>
 #include <uart.h>
+#elif IS_ESP32()
+#include <Ticker.h>
+// XXX need equivaent to uart.h
+#include <driver/i2s.h>
 #endif
 
 #ifdef EXTERNAL_DAC
@@ -76,6 +80,11 @@ PWM frequency tests
 16384Hz single nearly 9 bits (original mode) not bad for a single pin, but
 carrier freq noise can be an issue
 */
+
+#if IS_ESP32() && (ESP_AUDIO_OUT_MODE == INTERNAL_DAC)
+uint16_t output_buffer_size = 0;
+uint64_t samples_written_to_buffer = 0;
+#endif
 
 #if IS_ESP8266() && (ESP_AUDIO_OUT_MODE != PDM_VIA_SERIAL)
 #include <i2s.h>
@@ -310,7 +319,7 @@ static void tcConfigure(uint32_t sampleRate) {
 }
 #endif
 
-#if IS_ESP8266()
+#if IS_ESP8266() || IS_ESP32()
 // lookup table for fast pdm coding on 8 output bits at a time
 static byte fast_pdm_table[]{0,          0b00010000, 0b01000100,
                              0b10010010, 0b10101010, 0b10110101,
@@ -344,6 +353,9 @@ inline void writePDMCoded(uint16_t sample) {
 #if (ESP_AUDIO_OUT_MODE == PDM_VIA_I2S)
     i2s_write_sample(outbits);
 #endif
+#if (ESP_AUDIO_OUT_MODE == INTERNAL_DAC)
+    dacWrite(DAC1, outbits); // XXX need to scale the value?
+#endif
   }
 }
 
@@ -366,6 +378,9 @@ inline void espWriteAudioToBuffer() {
 #else
   i2s_write_lr(updateAudio(), 0);
 #endif
+#elif (ESP_AUDIO_OUT_MODE == INTERNAL_DAC)
+  dacWrite(DAC1, updateAudio()); // XXX scale output?
+  // XXX add stereo output
 #else
   uint16_t sample = updateAudio() + AUDIO_BIAS;
   writePDMCoded(sample);
@@ -402,7 +417,7 @@ void audioHook() // 2us excluding updateAudio()
     } else {
       --update_control_counter;
     }
-#if IS_ESP8266() && (ESP_AUDIO_OUT_MODE != PDM_VIA_SERIAL)
+#if (IS_ESP8266() || IS_ESP32()) && (ESP_AUDIO_OUT_MODE != PDM_VIA_SERIAL)
     // NOTE: On ESP / output via I2S, we simply use the I2S buffer as the output
     // buffer, which saves RAM, but also simplifies things a lot
     // esp. since i2s output already has output rate control -> no need for a
@@ -418,7 +433,7 @@ void audioHook() // 2us excluding updateAudio()
 #endif
 #endif
 
-#if IS_ESP8266()
+#if IS_ESP8266() || IS_ESP32()
     yield();
 #endif
   }
@@ -591,6 +606,9 @@ static void startAudioStandard() {
     output_buffer_size =
         i2s_available(); // Do not reset count when stopping / restarting
 #endif
+#elif IS_ESP32()
+// XXX set output_buffer_size?
+  //i2s_set_sample_rates(I2S_NUM_0, AUDIO_RATE); // XXX causes audio to stop
 #endif
 }
 
@@ -806,6 +824,8 @@ void stopMozzi() {
   output_stopped = true; // NOTE: No good way to stop the serial output itself,
                          // but probably not needed, anyway
 #endif
+#elif IS_ESP32()
+//XXX Nothing needed when using internal DAC?
 #elif IS_SAMD21()
 #else
 
@@ -843,13 +863,15 @@ void stopMozzi() {
 }
 
 unsigned long audioTicks() {
-#if (IS_ESP8266() && (ESP_AUDIO_OUT_MODE != PDM_VIA_SERIAL))
+#if IS_ESP8266() && (ESP_AUDIO_OUT_MODE != PDM_VIA_SERIAL)
 #if ((ESP_AUDIO_OUT_MODE == PDM_VIA_I2S) && (PDM_RESOLUTION != 1))
   return (samples_written_to_buffer -
           ((output_buffer_size - i2s_available()) / PDM_RESOLUTION));
 #else
   return (samples_written_to_buffer - (output_buffer_size - i2s_available()));
 #endif
+#elif IS_ESP32() && (ESP_OUT_MODE == INTERNAL_DAC)
+  return samples_written_to_buffer
 #else
   return output_buffer.count();
 #endif
